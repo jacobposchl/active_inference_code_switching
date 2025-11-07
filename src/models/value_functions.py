@@ -195,7 +195,9 @@ def make_value_fn_M3(profiles, Z, policies, num_actions_per_factor, arch_config)
         5. Convert to probabilities
         """
         # Profile weights based on current state beliefs
-        w = np.asarray(q_state_t, float) @ Z
+        q_state_flat = np.asarray(q_state_t, float).flatten()  # Ensure 1D
+        w = q_state_flat @ Z  # Shape: (K,)
+        w = w.flatten()  # Ensure 1D
         w = w / (w.sum() + 1e-12)
         
         # Mix outcome preferences for switch modality
