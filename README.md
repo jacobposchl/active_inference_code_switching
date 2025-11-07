@@ -75,6 +75,12 @@ This will:
 - Generate visualizations
 - Save results to `results/`
 
+## Data Source
+
+The dataset used in this project is from:
+
+**Calvillo, J., Fang, L., Cole, J., & Reitter, D. (2020).** Surprisal Predicts Code-Switching in Chinese English Bilingual Text. *Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)*. DOI: [10.18653/v1/2020.emnlp-main.330](https://doi.org/10.18653/v1/2020.emnlp-main.330)
+
 ## Models
 
 ### M1: Static Global Precision
@@ -320,29 +326,12 @@ If you run out of memory with large datasets:
 2. Process data in batches
 3. Use `verbose=False` in evaluation
 
-## Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@article{yourname2025,
-  title={State-Specific Precision Control in Bilingual Code-Switching: An Active Inference Approach},
-  author={Your Name},
-  journal={Journal Name},
-  year={2025}
-}
-```
-
-## License
-
-[Your License Here]
 
 ## Contact
 
-[Your Contact Information]
+jposchl@ucsc.edu
 
 ## Acknowledgments
 
 - Original notebook: Colab implementation
 - PyMDP library: Active Inference framework
-- Research funded by: [Your Funding Source]
