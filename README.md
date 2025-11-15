@@ -87,10 +87,10 @@ The dataset used in this project is from:
 - Fixed precision parameter (gamma)
 - Baseline model with no adaptation
 
-### M2: Entropy-Coupled Dynamic Precision
+### M2: Surprisal-Coupled Dynamic Precision
 - Precision varies with belief uncertainty
-- High entropy → lower precision (exploration)
-- Low entropy → higher precision (exploitation)
+- High surprisal → lower precision (exploration)
+- Low surprisal → higher precision (exploitation)
 
 ### M3: Profile-Based Precision Control (Our Innovation)
 - **Two cognitive profiles**: Fluent (low-load) vs Effortful (high-load)
@@ -125,22 +125,6 @@ TRAINING_CONFIG = {
 }
 ```
 
-## Key Features
-
-### Modular Architecture
-- **Separation of concerns**: Data, models, training, evaluation
-- **Easy experimentation**: Change configs without touching code
-- **Reusable components**: Import and use anywhere
-
-### Optimized for Performance
-- **Vectorized operations**: NumPy-based implementations
-- **Efficient caching**: Preprocessed data saved automatically
-- **Parallel-ready**: Structure supports multiprocessing
-
-### Research-Friendly
-- **Full reproducibility**: Fixed random seeds
-- **Comprehensive logging**: Detailed output at each step
-- **Publication-ready figures**: High-DPI visualizations
 
 ## Output Files
 

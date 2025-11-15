@@ -215,13 +215,16 @@ def fit_M3_parameters(data, A, D, Z_init, policies, num_actions, arch_config,
             xi1_init = profiles[1]['xi_logits']
             gamma1_init = np.log(profiles[1]['gamma'])
         elif restart == 0:
-            # Sensible initialization
-            phi0_init = np.array([0.5, -0.5])
-            phi1_init = np.array([-0.5, 0.5])
-            xi0_init = np.array([0.5, -0.5])
-            xi1_init = np.array([-0.5, 0.5])
-            gamma0_init = np.log(1.5)
-            gamma1_init = np.log(0.8)
+            # Sensible initialization with STRONG differentiation between profiles
+            # Profile 0 (low_load): strong preference for NOT switching
+            phi0_init = np.array([2.0, -2.0])  # Strongly prefer no-switch
+            xi0_init = np.array([1.0, -1.0])
+            gamma0_init = np.log(2.0)  # Higher precision
+            
+            # Profile 1 (high_load): strong preference FOR switching
+            phi1_init = np.array([-2.0, 2.0])  # Strongly prefer switch
+            xi1_init = np.array([-1.0, 1.0])
+            gamma1_init = np.log(0.5)  # Lower precision
         else:
             # Random initialization
             phi0_init = np.random.randn(2) * 0.5

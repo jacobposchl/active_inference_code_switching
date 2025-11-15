@@ -18,9 +18,9 @@ DATA_CONFIG = {
         'entropy_at_cs_point',
         'sent_type'
     ],
-    'n_bins_surprisal': 15, #note : higher bins for finer granularity, shows better results
-    'n_bins_length': 15, 
-    'n_bins_frequency': 15,
+    'n_bins_surprisal': 150, #note : higher bins for finer granularity, shows better results
+    'n_bins_length': 150, 
+    'n_bins_frequency': 150,
     'random_seed': 42
 }
 

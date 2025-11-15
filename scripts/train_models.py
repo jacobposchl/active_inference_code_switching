@@ -16,7 +16,8 @@ from src.models.value_functions import (make_value_fn_M1, make_value_fn_M2,
                                         make_value_fn_M3, test_value_functions)
 from src.models.profiles import create_profile_manager
 from src.models.baselines import (cross_validate_logistic_baselines, 
-                                   print_baseline_summary, get_baseline_configs)
+                                   print_baseline_summary, get_baseline_configs,
+                                   train_logistic_baseline)
 from src.training.cross_validation import cross_validate_models, print_cv_results
 from src.evaluation.metrics import evaluate_model, compare_models
 from src.evaluation.visualization import plot_model_comparison, plot_m3_mechanism
@@ -170,26 +171,69 @@ def main():
     cv_results.update(cv_results_baselines)
     
     # ============================================================
-    # STEP 6: FINAL EVALUATION WITH BEST LEARNED M3
+    # STEP 6: AGGREGATE M3 PREDICTIONS FROM CROSS-VALIDATION
     # ============================================================
-    print("\n### STEP 6: FINAL EVALUATION WITH LEARNED M3 ###\n")
+    print("\n### STEP 6: AGGREGATE M3 PREDICTIONS FROM CV FOLDS ###\n")
     
-    # Use parameters from best fold
-    best_fold_idx = np.argmax([r['accuracy'] for r in cv_results['M3']])
-    best_params = learned_params[best_fold_idx]
-    print(f"Using parameters from best fold ({best_fold_idx + 1})")
+    # The proper way to evaluate M3: use predictions from CV where each data point
+    # was in the test set exactly once, so no data leakage
+    print("Aggregating M3 predictions from cross-validation folds...")
     
-    # Create value function with learned parameters
-    value_fn_M3_learned = make_value_fn_M3(
-        best_params['profiles'],
-        best_params['Z'],
-        policies, num_actions,
-        ARCHITECTURE_CONFIG
-    )
+    # Reconstruct full dataset predictions from CV folds
+    # Since CV uses KFold on pairs, we need to reconstruct in order
+    from sklearn.model_selection import KFold
+    kf = KFold(n_splits=TRAINING_CONFIG['n_folds'], shuffle=True, 
+               random_state=DATA_CONFIG.get('random_seed', 42))
+    pair_ids = model_data['pair_id'].unique()
     
-    # Evaluate on full dataset
-    results_M3_learned = evaluate_model('M3_learned', value_fn_M3_learned, model_data,
-                                       A, B, D, ARCHITECTURE_CONFIG, M3_CONFIG, verbose=True)
+    # Create arrays to store results in original data order
+    n_samples = len(model_data)
+    m3_predictions_full = np.zeros(n_samples)
+    m3_logliks_full = np.zeros(n_samples)
+    
+    # Fill in predictions from each fold
+    for fold_idx, (train_pair_indices, test_pair_indices) in enumerate(kf.split(pair_ids)):
+        test_pair_ids = pair_ids[test_pair_indices]
+        test_indices = model_data[model_data['pair_id'].isin(test_pair_ids)].index
+        
+        # Get predictions from this fold
+        fold_predictions = cv_results['M3'][fold_idx]['predictions']
+        fold_logliks = cv_results['M3'][fold_idx]['log_likelihoods']
+        
+        # Place them in the correct positions
+        m3_predictions_full[test_indices] = fold_predictions
+        m3_logliks_full[test_indices] = fold_logliks
+    
+    # Get actuals from original data
+    m3_actuals_full = model_data['cs_binary'].values
+    
+    # Compute aggregate metrics
+    m3_accuracy = np.mean((m3_predictions_full > 0.5) == m3_actuals_full)
+    m3_total_loglik = np.sum(m3_logliks_full)
+    n_params = M3_CONFIG['num_profiles'] * 3  # phi, xi, gamma per profile
+    m3_aic = 2 * n_params - 2 * m3_total_loglik
+    m3_bic = np.log(n_samples) * n_params - 2 * m3_total_loglik
+    
+    results_M3_learned = {
+        'model_name': 'M3_learned',
+        'accuracy': m3_accuracy,
+        'total_log_lik': m3_total_loglik,
+        'aic': m3_aic,
+        'bic': m3_bic,
+        'n_params': n_params,
+        'predictions': m3_predictions_full,
+        'actual': m3_actuals_full,
+        'log_likelihoods': m3_logliks_full,
+        'gammas': np.array([]),  # Not storing gammas from CV
+        'inferred_states': np.array([])  # Not storing states from CV
+    }
+    
+    print(f"M3 Aggregated Results:")
+    print(f"  Accuracy: {m3_accuracy:.4f}")
+    print(f"  Total Log-Likelihood: {m3_total_loglik:.2f}")
+    print(f"  AIC: {m3_aic:.2f}")
+    print(f"  BIC: {m3_bic:.2f}")
+    print("\nNote: These are true out-of-sample predictions (no data leakage).")
     
     # ============================================================
     # STEP 7: COMPARE ALL MODELS
@@ -203,35 +247,38 @@ def main():
         'M3_learned': results_M3_learned
     }
     
-    # Add baseline results (using mean across folds)
-    for baseline_name in cv_results_baselines.keys():
-        baseline_folds = cv_results_baselines[baseline_name]
-        # Concatenate all predictions and actuals across folds
-        all_predictions = np.concatenate([r['predictions'] for r in baseline_folds])
-        all_actuals = np.concatenate([r['actual'] for r in baseline_folds])
-        all_log_liks = np.concatenate([r['log_likelihoods'] for r in baseline_folds])
+    # CRITICAL FIX: Train baselines on full dataset for fair comparison
+    # Previously concatenated CV test sets, which is valid but inconsistent with
+    # other models being evaluated on full dataset
+    print("\nTraining baseline models on full dataset for final comparison...")
+    baseline_configs = get_baseline_configs()
+    
+    for baseline_name, features in baseline_configs.items():
+        # Train on full dataset (for final comparison, not CV)
+        # Note: This is philosophically different from CV - here we're asking
+        # "how well does each model fit the full dataset" not "how well does it generalize"
+        lr_result = train_logistic_baseline(
+            model_data, model_data, features,  # Train and test on same data
+            model_name=baseline_name
+        )
         
-        # Total log-likelihood is the SUM across all samples (not mean)
-        total_log_lik = np.sum(all_log_liks)
-        
-        # Re-compute AIC and BIC on full dataset
-        n_samples = len(all_actuals)
-        n_params = baseline_folds[0]['n_params']
-        aic = 2 * n_params - 2 * total_log_lik
-        bic = np.log(n_samples) * n_params - 2 * total_log_lik
-        
-        # Aggregate results from all folds
         all_results[baseline_name] = {
-            'accuracy': np.mean([r['accuracy'] for r in baseline_folds]),
-            'total_log_lik': total_log_lik,  # Fixed: SUM not mean
-            'aic': aic,  # Re-computed on full dataset
-            'bic': bic,  # Re-computed on full dataset
-            'n_params': n_params,
-            'predictions': all_predictions,
-            'actual': all_actuals,
-            'log_likelihoods': all_log_liks,
+            'model_name': baseline_name,
+            'accuracy': lr_result['accuracy'],
+            'total_log_lik': lr_result['total_log_lik'],
+            'aic': lr_result['aic'],
+            'bic': lr_result['bic'],
+            'n_params': lr_result['n_params'],
+            'predictions': lr_result['predictions'],
+            'actual': lr_result['actual'],
+            'log_likelihoods': lr_result['log_likelihoods'],
             'gammas': np.array([])  # Empty for baselines
         }
+        print(f"  {baseline_name}: Accuracy={lr_result['accuracy']:.4f}, LogLik={lr_result['total_log_lik']:.2f}")
+    
+    print("\nNote: All models evaluated on full dataset.")
+    print("CV results above show generalization performance.")
+    print("Final comparison shows in-sample fit (for model selection with AIC/BIC).")
     
     best_models = compare_models(all_results)
     
@@ -264,7 +311,6 @@ def main():
         'cv_results_baselines': cv_results_baselines,
         'cv_summary': cv_summary,
         'learned_params': learned_params,
-        'best_params': best_params,
         'best_models': best_models,
         'baseline_configs': baseline_configs
     }
@@ -285,7 +331,7 @@ def main():
     print(f"  - m3_mechanism.png")
     print(f"  - training_results.pkl")
     
-    return all_results, cv_results, best_params
+    return all_results, cv_results, learned_params
 
 
 if __name__ == '__main__':

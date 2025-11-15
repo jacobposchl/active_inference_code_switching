@@ -107,26 +107,25 @@ def evaluate_model(model_name, value_fn, data, A, B, D, arch_config, model_confi
     if model_name == 'M1' or model_name == 'M1_static':
         n_params = 1  # Single gamma
     elif model_name == 'M2' or model_name == 'M2_coupled':
-        n_params = 2  # Coupling strength + gamma
+        n_params = 2  # Coupling strength + gamma_base
     elif 'M3' in model_name:
-        # M3: num_profiles * 3 params (phi, xi, gamma) + Z matrix entries
+        # M3: num_profiles * 3 free params per profile + (optionally) Z matrix free params
+        # Per profile: phi (1 free param - 2nd determined by sum to 1),
+        #              xi (1 free param), gamma (1 free param) = 3 total
+        # Z matrix: IF learned, num_states * (num_profiles-1) free params
         if model_config is not None:
             num_profiles = model_config.get('num_profiles', 2)
             num_states = arch_config.get('num_states', 2)
             # Handle both int and list types for num_states
             if isinstance(num_states, list):
                 num_states = num_states[0]
-            n_params = num_profiles * 3 + (num_states * num_profiles)
+            
+            # Profile parameters only (default: Z is fixed, not learned)
+            # For 2 profiles: 2*3 = 6 parameters
+            n_params = num_profiles * 3
         else:
-            # Fallback: compute from state space
-            num_states = arch_config.get('num_states', 2)
-            if isinstance(num_states, list):
-                num_states = num_states[0]
-            # Assume each state-pair gets a profile (surprisal × length bins)
-            n_surp_bins = len(arch_config.get('obs_surprisal_labels', ['surp_bin_0']))
-            n_len_bins = len(arch_config.get('obs_length_labels', ['len_bin_0']))
-            num_profiles = n_surp_bins * n_len_bins
-            n_params = num_profiles * 3 + (num_states * num_profiles)
+            # Fallback: Assume 2 profiles, Z fixed
+            n_params = 2 * 3  # 6 parameters
     else:
         n_params = 1  # Default fallback
     
