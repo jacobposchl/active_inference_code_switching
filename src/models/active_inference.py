@@ -48,18 +48,47 @@ def build_A_matrix(config, a_matrix_config):
     
     A = utils.obj_array(num_modalities)
     
+    # Helper for validation/normalization
+    def _validate_and_normalize(mat, modality_name, expected_rows=None):
+        mat = np.asarray(mat, dtype=float)
+        if mat.ndim != 2:
+            raise ValueError(f"{modality_name} matrix must be 2D (obs x states); got shape {mat.shape}")
+        if mat.shape[1] != num_states:
+            raise ValueError(f"{modality_name} matrix has {mat.shape[1]} columns but expected {num_states} (num_states)")
+        if expected_rows is not None and mat.shape[0] != expected_rows:
+            raise ValueError(f"{modality_name} matrix has {mat.shape[0]} rows but expected {expected_rows} (labels length)")
+        # clip tiny negative values due to numerical issues
+        mat = np.clip(mat, 0.0, None)
+        col_sums = mat.sum(axis=0)
+        if np.any(col_sums == 0):
+            raise ValueError(f"{modality_name} matrix has a column with zero sum; cannot normalize")
+        mat = mat / col_sums[None, :]
+        if not np.all(np.isfinite(mat)) or np.any(mat < 0):
+            raise ValueError(f"{modality_name} matrix contains invalid values after normalization")
+        if not np.allclose(mat.sum(axis=0), 1.0, atol=1e-8):
+            raise ValueError(f"{modality_name} matrix columns do not sum to 1 after normalization")
+        return mat
+
     # Modality 0: Surprisal observations
-    A[0] = a_matrix_config['surprisal'].copy()
-    # Normalize columns (ensure each column sums to 1)
-    A[0] = A[0] / A[0].sum(axis=0, keepdims=True)
-    
+    if 'surprisal' not in a_matrix_config:
+        raise KeyError("a_matrix_config must contain key 'surprisal'")
+    expected_surprisal_rows = len(config.get('obs_surprisal_labels', [])) or None
+    A[0] = _validate_and_normalize(a_matrix_config['surprisal'], 'Surprisal', expected_rows=expected_surprisal_rows)
+
     # Modality 1: Length observations
-    A[1] = a_matrix_config['length'].copy()
-    A[1] = A[1] / A[1].sum(axis=0, keepdims=True)
-    
-    # Modality 2: Switch observations (uniform - determined by action)
-    num_obs_switch = len(config['obs_switch_labels'])
-    A[2] = np.ones((num_obs_switch, num_states)) / num_obs_switch
+    if 'length' not in a_matrix_config:
+        raise KeyError("a_matrix_config must contain key 'length'")
+    expected_length_rows = len(config.get('obs_length_labels', [])) or None
+    A[1] = _validate_and_normalize(a_matrix_config['length'], 'Length', expected_rows=expected_length_rows)
+
+    # Modality 2: Switch observations
+    num_obs_switch = len(config.get('obs_switch_labels', ['no_switch', 'switch']))
+    if 'switch' in a_matrix_config and not (isinstance(a_matrix_config['switch'], str) and a_matrix_config['switch'] == 'uniform'):
+        # Expect an explicit array
+        A[2] = _validate_and_normalize(a_matrix_config['switch'], 'Switch', expected_rows=num_obs_switch)
+    else:
+        # Build explicit uniform switch matrix
+        A[2] = np.ones((num_obs_switch, num_states), dtype=float) / float(num_obs_switch)
     
     return A
 
@@ -81,20 +110,58 @@ def build_B_matrix(config):
     B : object array
         State transition matrices
     """
-    num_states = config['num_states']
-    num_actions = [len(config['action_labels'])]
-    volatility = config['volatility']
-    
-    B = utils.obj_array(1)  # One state factor
-    B[0] = np.zeros((num_states, num_states, num_actions[0]))
-    
-    # Transitions are same for both actions (actions don't change cognitive state)
-    for a in range(num_actions[0]):
-        B[0][:, :, a] = np.array([
-            [1-volatility, volatility],    # from low_load
-            [volatility, 1-volatility]      # from high_load
-        ])
-    
+    num_states = int(config.get('num_states'))
+    action_labels = list(config.get('action_labels', []))
+    n_actions = len(action_labels)
+
+    if n_actions == 0:
+        raise ValueError("config['action_labels'] must contain at least one action")
+
+    # Volatility: probability of switching away from the current state
+    # Accept either a single scalar `volatility` or a list `action_volatilities` with one per action
+    volatility = float(config.get('volatility', 0.1))
+    if not (0.0 <= volatility <= 1.0):
+        raise ValueError(f"volatility must be between 0 and 1; got {volatility}")
+
+    action_vols = config.get('action_volatilities', None)
+    if action_vols is None:
+        action_vols = [volatility] * n_actions
+    else:
+        if len(action_vols) != n_actions:
+            raise ValueError("length of 'action_volatilities' must equal number of actions")
+        action_vols = [float(v) for v in action_vols]
+        for v in action_vols:
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(f"each action_volatility must be between 0 and 1; got {v}")
+
+    # Build B: shape (num_states, num_states, n_actions) where B[s', s, a] = p(s' | s, a)
+    B = utils.obj_array(1)
+    B[0] = np.zeros((num_states, num_states, n_actions), dtype=float)
+
+    for a_idx, a_vol in enumerate(action_vols):
+        if num_states == 1:
+            B[0][:, :, a_idx] = np.ones((1, 1), dtype=float)
+            continue
+
+        persistence = 1.0 - a_vol
+        off_diag = a_vol / float(max(1, num_states - 1))
+
+        mat = np.full((num_states, num_states), off_diag, dtype=float)
+        np.fill_diagonal(mat, persistence)
+
+        # Numeric safety: clip tiny negatives, normalize columns to sum to 1
+        mat = np.clip(mat, 0.0, 1.0)
+        col_sums = mat.sum(axis=0)
+        if np.any(col_sums == 0):
+            raise ValueError(f"Constructed transition matrix for action {a_idx} has a zero column; check volatility values")
+        mat = mat / col_sums[None, :]
+        if not np.all(np.isfinite(mat)):
+            raise ValueError(f"Non-finite values in transition matrix for action {a_idx}")
+        if not np.allclose(mat.sum(axis=0), 1.0, atol=1e-8):
+            raise ValueError(f"Transition matrix columns do not sum to 1 for action {a_idx}")
+
+        B[0][:, :, a_idx] = mat
+
     return B
 
 

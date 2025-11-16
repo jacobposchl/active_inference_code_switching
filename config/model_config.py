@@ -18,9 +18,9 @@ DATA_CONFIG = {
         'entropy_at_cs_point',
         'sent_type'
     ],
-    'n_bins_surprisal': 150, #note : higher bins for finer granularity, shows better results
-    'n_bins_length': 150, 
-    'n_bins_frequency': 150,
+    'n_bins_surprisal': 50, #note : higher bins for finer granularity, shows better results
+    'n_bins_length': 50, 
+    'n_bins_frequency': 50,
     'random_seed': 42
 }
 
@@ -51,8 +51,11 @@ ARCHITECTURE_CONFIG = {
     'control_fac_idx': [0],
     'use_utility': True,
     'use_states_info_gain': False,
-    'action_selection': 'stochastic'
+    'action_selection': 'stochastic',
+    # Gamma used when extracting policies from a temporary agent (policy posterior precision)
+    'policy_extraction_gamma': 16.0
 }
+
 
 # ============================================================
 # MODEL 1: STATIC GLOBAL PRECISION
@@ -120,16 +123,26 @@ def _generate_observation_model():
         # Linear gradient: low bins favor low_load, high bins favor high_load
         surprisal_matrix[i, 0] = (n_surp_bins - i) / n_surp_bins  # Low load
         surprisal_matrix[i, 1] = (i + 1) / n_surp_bins            # High load
-    # Normalize
-    surprisal_matrix = surprisal_matrix / surprisal_matrix.sum(axis=0, keepdims=True)
+    # Normalize with validation
+    col_sums = surprisal_matrix.sum(axis=0)
+    if np.any(col_sums == 0):
+        raise ValueError("Surprisal observation matrix has a column sum of zero; cannot normalize")
+    surprisal_matrix = surprisal_matrix / col_sums[None, :]
+    if not np.all(np.isfinite(surprisal_matrix)) or np.any(surprisal_matrix < 0):
+        raise ValueError("Invalid values in surprisal observation matrix after normalization")
     
     # Length: shorter sentences in low_load, longer in high_load
     length_matrix = np.zeros((n_len_bins, 2))
     for i in range(n_len_bins):
         length_matrix[i, 0] = (n_len_bins - i) / n_len_bins  # Low load
         length_matrix[i, 1] = (i + 1) / n_len_bins            # High load
-    # Normalize
-    length_matrix = length_matrix / length_matrix.sum(axis=0, keepdims=True)
+    # Normalize with validation
+    col_sums_len = length_matrix.sum(axis=0)
+    if np.any(col_sums_len == 0):
+        raise ValueError("Length observation matrix has a column sum of zero; cannot normalize")
+    length_matrix = length_matrix / col_sums_len[None, :]
+    if not np.all(np.isfinite(length_matrix)) or np.any(length_matrix < 0):
+        raise ValueError("Invalid values in length observation matrix after normalization")
     
     return {
         'surprisal': surprisal_matrix,

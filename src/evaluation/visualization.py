@@ -113,9 +113,36 @@ def plot_m3_mechanism(results_m3, model_data, config, save_path=None):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
     surprisal_vals = model_data['surprisal_first_cs_word_trans'].values
-    high_load_probs = results_m3['inferred_states'][:, 1]
-    gammas = results_m3['gammas']
-    predictions = results_m3['predictions']
+    # Handle inferred_states that may be empty, 1D, or 2D
+    inferred = results_m3.get('inferred_states', np.array([]))
+    inferred = np.asarray(inferred)
+    if inferred.size == 0:
+        # No inferred states available (e.g. aggregated CV results). Try reasonable fallbacks.
+        if 'predictions' in results_m3 and np.asarray(results_m3['predictions']).shape[0] == len(model_data):
+            # Use predictions as a proxy (not ideal) if nothing else
+            high_load_probs = np.asarray(results_m3['predictions'])
+        else:
+            high_load_probs = np.full(len(model_data), np.nan)
+    else:
+        if inferred.ndim == 1:
+            # If 1D and length matches data, assume it's already P(high_load)
+            if inferred.shape[0] == len(model_data):
+                high_load_probs = inferred
+            else:
+                # Try reshaping into (n_samples, n_states) if possible
+                try:
+                    reshaped = inferred.reshape(len(model_data), -1)
+                    high_load_probs = reshaped[:, 1]
+                except Exception:
+                    high_load_probs = np.full(len(model_data), np.nan)
+        else:
+            # Standard case: shape (n_samples, n_states)
+            high_load_probs = inferred[:, 1]
+
+    gammas = np.asarray(results_m3.get('gammas', np.array([])))
+    if gammas.size == 0:
+        gammas = np.full(len(model_data), np.nan)
+    predictions = np.asarray(results_m3.get('predictions', np.full(len(model_data), np.nan)))
     actual = model_data['cs_binary'].values
     
     # Plot 1: State inference
@@ -154,33 +181,44 @@ def plot_m3_mechanism(results_m3, model_data, config, save_path=None):
     # Plot 4: Predictions vs Actual by Surprisal Bin
     model_data_copy = model_data.copy()
     model_data_copy['m3_pred'] = predictions
-    
-    surprisal_bins = ['Low', 'Medium', 'High']
-    predicted_by_bin = [
-        model_data_copy[model_data_copy['surprisal_idx']==0]['m3_pred'].mean(),
-        model_data_copy[model_data_copy['surprisal_idx']==1]['m3_pred'].mean(),
-        model_data_copy[model_data_copy['surprisal_idx']==2]['m3_pred'].mean()
-    ]
-    actual_by_bin = [
-        model_data_copy[model_data_copy['surprisal_idx']==0]['cs_binary'].mean(),
-        model_data_copy[model_data_copy['surprisal_idx']==1]['cs_binary'].mean(),
-        model_data_copy[model_data_copy['surprisal_idx']==2]['cs_binary'].mean()
-    ]
-    
-    x = np.arange(len(surprisal_bins))
-    width = 0.35
-    axes[1, 1].bar(x - width/2, actual_by_bin, width, label='Actual',
-                   color='steelblue', alpha=0.8, edgecolor='black')
-    axes[1, 1].bar(x + width/2, predicted_by_bin, width, label='M3 Predicted',
-                   color='coral', alpha=0.8, edgecolor='black')
-    axes[1, 1].set_xlabel('Surprisal Level', fontsize=12)
-    axes[1, 1].set_ylabel('Code-Switch Rate', fontsize=12)
-    axes[1, 1].set_title('Predicted vs Actual Switch Rates', 
-                         fontsize=13, fontweight='bold')
-    axes[1, 1].set_xticks(x)
-    axes[1, 1].set_xticklabels(surprisal_bins)
-    axes[1, 1].legend()
-    axes[1, 1].grid(True, alpha=0.3, axis='y')
+
+    # Determine surprisal bins dynamically to avoid hard-coded 0/1/2 indexes
+    unique_bins = sorted(model_data_copy['surprisal_idx'].dropna().unique())
+    if len(unique_bins) == 0:
+        # No bin information available
+        surprisal_bins = []
+        predicted_by_bin = []
+        actual_by_bin = []
+    else:
+        if len(unique_bins) == 3:
+            surprisal_bins = ['Low', 'Medium', 'High']
+        else:
+            surprisal_bins = [f'Bin {i}' for i in range(len(unique_bins))]
+
+        predicted_by_bin = [model_data_copy[model_data_copy['surprisal_idx']==b]['m3_pred'].mean()
+                             for b in unique_bins]
+        actual_by_bin = [model_data_copy[model_data_copy['surprisal_idx']==b]['cs_binary'].mean()
+                         for b in unique_bins]
+
+    # Plot bars only if we have bin data
+    if len(unique_bins) > 0:
+        x = np.arange(len(surprisal_bins))
+        width = 0.35
+        axes[1, 1].bar(x - width/2, actual_by_bin, width, label='Actual',
+                       color='steelblue', alpha=0.8, edgecolor='black')
+        axes[1, 1].bar(x + width/2, predicted_by_bin, width, label='M3 Predicted',
+                       color='coral', alpha=0.8, edgecolor='black')
+        axes[1, 1].set_xlabel('Surprisal Level', fontsize=12)
+        axes[1, 1].set_ylabel('Code-Switch Rate', fontsize=12)
+        axes[1, 1].set_title('Predicted vs Actual Switch Rates', 
+                             fontsize=13, fontweight='bold')
+        axes[1, 1].set_xticks(x)
+        axes[1, 1].set_xticklabels(surprisal_bins)
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3, axis='y')
+    else:
+        axes[1, 1].text(0.5, 0.5, 'No surprisal bin information available',
+                        transform=axes[1, 1].transAxes, ha='center', va='center')
     
     plt.tight_layout()
     

@@ -82,6 +82,18 @@ def compute_log_likelihood_M3(params_flat, data, A, D, policies, num_actions,
     neg_log_lik : float
         Negative log-likelihood (for minimization)
     """
+    # Basic validation: ensure params vector long enough for expected layout
+    # Current implementation assumes two profiles, each with:
+    #   phi_logits (2), xi_logits (2), gamma (1) => 5 params per profile
+    # If learn_Z: Z_logits (2x2) appended => +4 params
+    # Total without Z: 10, with Z: 14
+    expected_len = 14 if learn_Z else 10
+    if params_flat is None or len(params_flat) < expected_len:
+        raise ValueError(
+            f"params_flat length {0 if params_flat is None else len(params_flat)} "
+            f"is too short for learn_Z={learn_Z}. Expected at least {expected_len} elements."
+        )
+
     # Unpack parameters
     if learn_Z:
         phi0_logits = params_flat[0:2]

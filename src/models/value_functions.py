@@ -53,11 +53,11 @@ def make_value_fn_M1(config, arch_config):
 
 def make_value_fn_M2(config, arch_config):
     """
-    Model 2: Dynamic Global Precision (Entropy-Coupled)
+    Model 2: Dynamic Global Precision (Surprisal-Coupled)
     - Fixed outcome preferences (C)
-    - Gamma adapts based on belief entropy
-    - High entropy (uncertainty) → lower gamma (more exploration)
-    - Low entropy (confidence) → higher gamma (more exploitation)
+    - Gamma adapts based on belief surprisal (negative log-prob of MAP)
+    - High surprisal (unexpected beliefs) → lower gamma (more exploration)
+    - Low surprisal (confident/predictable) → higher gamma (more exploitation)
     
     Parameters:
     -----------
@@ -80,11 +80,16 @@ def make_value_fn_M2(config, arch_config):
     C_switch_logits = np.array([0.0, 0.0])
     C_switch = softmax(C_switch_logits)
     
-    def gamma_entropy_coupled(q_state_t):
-        """Lower precision when uncertain (higher entropy)"""
+    def gamma_surprisal_coupled(q_state_t):
+        """Lower precision when surprisal is high.
+
+        We define surprisal here as the negative log-probability of the most
+        probable state (MAP surprisal). Expected surprisal equals entropy,
+        so using MAP surprisal produces a different sensitivity profile.
+        """
         p = np.clip(np.asarray(q_state_t, float), 1e-12, 1.0)
-        H = -(p * np.log(p)).sum()  # Entropy
-        return gamma_base / (1.0 + k * H)
+        s_map = -np.log(np.max(p))
+        return gamma_base / (1.0 + k * s_map)
     
     def value_fn(q_state_t, t):
         C_t = utils.obj_array(num_modalities)
@@ -93,7 +98,7 @@ def make_value_fn_M2(config, arch_config):
         C_t[2] = C_switch
         
         E_t = None
-        gamma_t = gamma_entropy_coupled(q_state_t)
+        gamma_t = gamma_surprisal_coupled(q_state_t)
         
         return C_t, E_t, gamma_t
     
@@ -252,7 +257,7 @@ def test_value_functions(value_fn_M1, value_fn_M2, value_fn_M3=None):
     print(f"  C[2] (switch prefs): {C_test[2]}")
     
     # Test M2
-    print("\nM2 (Entropy-Coupled):")
+    print("\nM2 (Surprisal-Coupled):")
     for q_test in test_beliefs:
         C_test, E_test, gamma_test = value_fn_M2(q_test, 0)
         entropy = -(q_test * np.log(q_test + 1e-12)).sum()

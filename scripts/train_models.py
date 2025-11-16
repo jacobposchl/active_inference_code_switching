@@ -22,8 +22,10 @@ from src.training.cross_validation import cross_validate_models, print_cv_result
 from src.evaluation.metrics import evaluate_model, compare_models
 from src.evaluation.visualization import plot_model_comparison, plot_m3_mechanism
 from pymdp.agent import Agent
-from pymdp import control
+from pymdp import control, utils
 import numpy as np
+import copy
+import random
 
 
 def main():
@@ -36,6 +38,11 @@ def main():
     # ============================================================
     # STEP 1: DATA PREPROCESSING
     # ============================================================
+
+    # Set global random seed for reproducibility (numpy and python random)
+    seed = DATA_CONFIG.get('random_seed', 42)
+    np.random.seed(seed)
+    random.seed(seed)
     print("\n### STEP 1: DATA PREPROCESSING ###\n")
     
     # Check if processed data exists
@@ -65,8 +72,50 @@ def main():
     # STEP 2: INITIALIZE GENERATIVE MODEL
     # ============================================================
     print("\n### STEP 2: INITIALIZE GENERATIVE MODEL ###\n")
-    
-    A, B, D = initialize_model(ARCHITECTURE_CONFIG, A_MATRIX_CONFIG)
+
+    # Build runtime architecture and A-matrix based on actual discretized bins
+    # This prevents mismatches when pd.qcut drops duplicate quantiles
+    if 'surprisal_idx' in model_data.columns:
+        actual_surprisal_bins = int(model_data['surprisal_idx'].nunique())
+    else:
+        actual_surprisal_bins = DATA_CONFIG.get('n_bins_surprisal')
+
+    if 'length_idx' in model_data.columns:
+        actual_length_bins = int(model_data['length_idx'].nunique())
+    else:
+        actual_length_bins = DATA_CONFIG.get('n_bins_length')
+
+    runtime_arch = copy.deepcopy(ARCHITECTURE_CONFIG)
+    runtime_arch['obs_surprisal_labels'] = [f'surp_bin_{i}' for i in range(actual_surprisal_bins)]
+    runtime_arch['obs_length_labels'] = [f'len_bin_{i}' for i in range(actual_length_bins)]
+
+    # Generate corresponding A matrix configuration using the same linear gradient rule
+    def _make_a_config(n_surp, n_len):
+        surprisal_matrix = np.zeros((n_surp, runtime_arch['num_states']))
+        for i in range(n_surp):
+            surprisal_matrix[i, 0] = (n_surp - i) / float(n_surp)
+            surprisal_matrix[i, 1] = (i + 1) / float(n_surp)
+        col_sums = surprisal_matrix.sum(axis=0)
+        col_sums[col_sums == 0] = 1.0
+        surprisal_matrix = surprisal_matrix / col_sums[None, :]
+
+        length_matrix = np.zeros((n_len, runtime_arch['num_states']))
+        for i in range(n_len):
+            length_matrix[i, 0] = (n_len - i) / float(n_len)
+            length_matrix[i, 1] = (i + 1) / float(n_len)
+        col_sums_len = length_matrix.sum(axis=0)
+        col_sums_len[col_sums_len == 0] = 1.0
+        length_matrix = length_matrix / col_sums_len[None, :]
+
+        return {'surprisal': surprisal_matrix, 'length': length_matrix, 'switch': 'uniform'}
+
+    runtime_a_config = _make_a_config(actual_surprisal_bins, actual_length_bins)
+
+    # Use a local runtime architecture so we don't shadow module-level names.
+    arch_cfg = runtime_arch
+    a_cfg = runtime_a_config
+
+    A, B, D = initialize_model(arch_cfg, a_cfg)
     
     # ============================================================
     # STEP 3: CREATE VALUE FUNCTIONS
@@ -74,21 +123,21 @@ def main():
     print("\n### STEP 3: CREATE VALUE FUNCTIONS ###\n")
     
     # M1: Static precision
-    value_fn_M1 = make_value_fn_M1(M1_CONFIG, ARCHITECTURE_CONFIG)
+    value_fn_M1 = make_value_fn_M1(M1_CONFIG, arch_cfg)
     print(f"✓ Created {M1_CONFIG['name']}: {M1_CONFIG['description']}")
     
     # M2: Entropy-coupled precision
-    value_fn_M2 = make_value_fn_M2(M2_CONFIG, ARCHITECTURE_CONFIG)
+    value_fn_M2 = make_value_fn_M2(M2_CONFIG, arch_cfg)
     print(f"✓ Created {M2_CONFIG['name']}: {M2_CONFIG['description']}")
     
     # Extract policies for M3
     print("\nExtracting policies from temporary agent...")
-    C_dummy = utils.obj_array(ARCHITECTURE_CONFIG['num_modalities'])
+    C_dummy = utils.obj_array(arch_cfg['num_modalities'])
     
     # Create C matrices with correct dimensions based on actual observation space
-    n_obs_surprisal = len(ARCHITECTURE_CONFIG['obs_surprisal_labels'])
-    n_obs_length = len(ARCHITECTURE_CONFIG['obs_length_labels'])
-    n_obs_switch = len(ARCHITECTURE_CONFIG['obs_switch_labels'])
+    n_obs_surprisal = len(arch_cfg['obs_surprisal_labels'])
+    n_obs_length = len(arch_cfg['obs_length_labels'])
+    n_obs_switch = len(arch_cfg['obs_switch_labels'])
     
     C_dummy[0] = np.ones(n_obs_surprisal) / n_obs_surprisal  # Uniform over surprisal obs
     C_dummy[1] = np.ones(n_obs_length) / n_obs_length        # Uniform over length obs
@@ -96,16 +145,16 @@ def main():
     
     temp_agent = Agent(
         A=A, B=B, C=C_dummy, D=D,
-        policy_len=ARCHITECTURE_CONFIG['policy_len'],
-        inference_horizon=ARCHITECTURE_CONFIG['inference_horizon'],
-        control_fac_idx=ARCHITECTURE_CONFIG['control_fac_idx'],
-        use_utility=ARCHITECTURE_CONFIG['use_utility'],
-        use_states_info_gain=ARCHITECTURE_CONFIG['use_states_info_gain'],
-        action_selection=ARCHITECTURE_CONFIG['action_selection'],
-        gamma=16.0
+        policy_len=arch_cfg['policy_len'],
+        inference_horizon=arch_cfg['inference_horizon'],
+        control_fac_idx=arch_cfg['control_fac_idx'],
+        use_utility=arch_cfg['use_utility'],
+        use_states_info_gain=arch_cfg['use_states_info_gain'],
+        action_selection=arch_cfg['action_selection'],
+        gamma=arch_cfg.get('policy_extraction_gamma', 16.0)
     )
     policies = temp_agent.policies
-    num_actions = [len(ARCHITECTURE_CONFIG['action_labels'])]
+    num_actions = [len(arch_cfg['action_labels'])]
     print(f"Extracted {len(policies)} policies")
     
     # M3: Profile-based precision
@@ -114,7 +163,7 @@ def main():
         profile_manager.get_profiles(),
         profile_manager.get_Z(),
         policies, num_actions,
-        ARCHITECTURE_CONFIG
+        arch_cfg
     )
     print(f"✓ Created {M3_CONFIG['name']}: {M3_CONFIG['description']}")
     
@@ -127,11 +176,11 @@ def main():
     print("\n### STEP 4: INITIAL EVALUATION ON FULL DATASET ###\n")
     
     results_M1 = evaluate_model('M1', value_fn_M1, model_data, A, B, D, 
-                                ARCHITECTURE_CONFIG, M1_CONFIG, verbose=True)
+                                arch_cfg, M1_CONFIG, verbose=True)
     results_M2 = evaluate_model('M2', value_fn_M2, model_data, A, B, D,
-                                ARCHITECTURE_CONFIG, M2_CONFIG, verbose=True)
+                                arch_cfg, M2_CONFIG, verbose=True)
     results_M3_initial = evaluate_model('M3_initial', value_fn_M3, model_data, A, B, D,
-                                        ARCHITECTURE_CONFIG, M3_CONFIG, verbose=True)
+                                        arch_cfg, M3_CONFIG, verbose=True)
     
     # ============================================================
     # STEP 5: CROSS-VALIDATION WITH LEARNING
@@ -142,7 +191,7 @@ def main():
     
     cv_results, learned_params = cross_validate_models(
         model_data, value_fns, A, B, D, policies, num_actions,
-        ARCHITECTURE_CONFIG, M3_CONFIG, TRAINING_CONFIG,
+        arch_cfg, M3_CONFIG, TRAINING_CONFIG,
         n_jobs=TRAINING_CONFIG.get('n_jobs', 1)
     )
     
@@ -247,9 +296,7 @@ def main():
         'M3_learned': results_M3_learned
     }
     
-    # CRITICAL FIX: Train baselines on full dataset for fair comparison
-    # Previously concatenated CV test sets, which is valid but inconsistent with
-    # other models being evaluated on full dataset
+    # Train baselines on full dataset for fair comparison
     print("\nTraining baseline models on full dataset for final comparison...")
     baseline_configs = get_baseline_configs()
     
@@ -337,5 +384,4 @@ def main():
 if __name__ == '__main__':
     # Import additional required modules
     from pymdp import utils
-    
     main()

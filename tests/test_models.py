@@ -144,7 +144,7 @@ class TestValueFunctions:
         assert len(C) == 3
         assert gamma == M1_CONFIG['gamma_fixed']
     
-    def test_M2_gamma_varies_with_entropy(self):
+    def test_M2_gamma_varies_with_surprisal(self):
         from src.models.value_functions import make_value_fn_M2
         
         value_fn = make_value_fn_M2(M2_CONFIG, ARCHITECTURE_CONFIG)
@@ -157,7 +157,7 @@ class TestValueFunctions:
         q_high_entropy = np.array([0.5, 0.5])
         C2, E2, gamma2 = value_fn(q_high_entropy, 0)
         
-        # Higher entropy should give lower gamma
+        # Higher surprisal should give lower gamma
         assert gamma2 < gamma1
 
 

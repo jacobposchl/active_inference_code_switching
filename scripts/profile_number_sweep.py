@@ -228,7 +228,7 @@ def run_k_profiles_experiment(k_values=[1, 2, 3, 4, 5],
         use_utility=ARCHITECTURE_CONFIG['use_utility'],
         use_states_info_gain=ARCHITECTURE_CONFIG['use_states_info_gain'],
         action_selection=ARCHITECTURE_CONFIG['action_selection'],
-        gamma=16.0
+        gamma=ARCHITECTURE_CONFIG.get('policy_extraction_gamma', 16.0)
     )
     policies = temp_agent.policies
     num_actions = [len(ARCHITECTURE_CONFIG['action_labels'])]
